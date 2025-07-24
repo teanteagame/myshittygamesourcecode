@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 public class PlayerCamera : MonoBehaviour
 {
@@ -7,7 +7,7 @@ public class PlayerCamera : MonoBehaviour
     [SerializeField] private Transform pivot;
     [SerializeField] private Transform cameraTransform;
 
-    [Header("Camera Settings")]
+    [Header("Rotation Settings")]
     [SerializeField] private float followSpeed = 20f;
     [SerializeField] private float mouseSensitivity = 2f;
     [SerializeField] private float minPitch = -30f;
@@ -38,6 +38,13 @@ public class PlayerCamera : MonoBehaviour
     private float smoothedZ;
     private float cameraVelocityZ;
 
+    public static PlayerCamera instance;
+
+    private void Awake()
+    {
+        instance = this;
+    }
+
     private void Start()
     {
         input = PlayerInput.instance;
@@ -53,6 +60,23 @@ public class PlayerCamera : MonoBehaviour
             pitch -= input.mouseY * mouseSensitivity;
             pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
         }
+
+        if (input.lockOnToggle)
+        {
+            ToggleLockOn(FindLockOnTarget());
+            input.lockOnToggle = false;
+        }
+
+        if (!isLockedOn) return;
+
+        if (input.switchTargetRightPressed)
+        {
+            SwitchTarget(toRight: true);
+        }
+        else if (input.switchTargetLeftPressed)
+        {
+            SwitchTarget(toRight: false);
+        }
     }
 
     private void FixedUpdate()
@@ -64,7 +88,7 @@ public class PlayerCamera : MonoBehaviour
 
         if (isLockedOn && lockTarget)
         {
-            if (!ValidateLockTarget())
+            if (!IsLockTargetValid(lockTarget))
             {
                 ToggleLockOn(null);
                 return;
@@ -93,12 +117,13 @@ public class PlayerCamera : MonoBehaviour
 
     private void RotateTowardLockTarget()
     {
-        Vector3 toTargetFlat = lockTarget.position - transform.position;
-        toTargetFlat.y = 0f;
-        if (toTargetFlat.sqrMagnitude > 0.001f)
+        Vector3 flatDir = lockTarget.position - transform.position;
+        flatDir.y = 0f;
+
+        if (flatDir.sqrMagnitude > 0.001f)
         {
-            Quaternion targetYaw = Quaternion.LookRotation(toTargetFlat.normalized);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetYaw, lockRotationSpeed * Time.fixedDeltaTime);
+            Quaternion targetRot = Quaternion.LookRotation(flatDir.normalized);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, lockRotationSpeed * Time.fixedDeltaTime);
         }
 
         Vector3 toTarget = lockTarget.position - pivot.position;
@@ -111,53 +136,44 @@ public class PlayerCamera : MonoBehaviour
     private void HandleCameraCollision()
     {
         Vector3 origin = pivot.position;
-        Vector3 desiredCameraPos = pivot.position + pivot.rotation * new Vector3(0, 0, defaultCameraZ);
-        Vector3 direction = (desiredCameraPos - origin).normalized;
-
+        Vector3 targetPos = pivot.position + pivot.rotation * new Vector3(0f, 0f, defaultCameraZ);
+        Vector3 dir = (targetPos - origin).normalized;
         float maxDistance = Mathf.Abs(defaultCameraZ);
         float targetZ = defaultCameraZ;
 
-        // Perform sphere cast
-        if (Physics.SphereCast(origin, cameraSphereRadius, direction, out RaycastHit hit, maxDistance, collisionLayers))
+        if (Physics.SphereCast(origin, cameraSphereRadius, dir, out RaycastHit hit, maxDistance, collisionLayers))
         {
             float adjustedDist = Vector3.Distance(origin, hit.point) - cameraCollisionOffset;
             targetZ = -Mathf.Clamp(adjustedDist, minimumCollisionDistance, maxDistance);
         }
 
-        // Dampen the movement to avoid sharp snapping or flickering
         smoothedZ = Mathf.SmoothDamp(smoothedZ, targetZ, ref cameraVelocityZ, 0.05f);
-
-        // Apply to local position
-        Vector3 localPos = cameraTransform.localPosition;
-        localPos.z = smoothedZ;
-        cameraTransform.localPosition = localPos;
+        cameraTransform.localPosition = new Vector3(0, 0, smoothedZ);
     }
 
     private void UpdateFlatDirections()
     {
         flatForward = pivot.forward;
-        flatForward.y = 0;
+        flatForward.y = 0f;
         flatForward.Normalize();
 
         flatRight = pivot.right;
-        flatRight.y = 0;
+        flatRight.y = 0f;
         flatRight.Normalize();
     }
 
     public Transform FindLockOnTarget()
     {
         Collider[] hits = Physics.OverlapSphere(target.position, lockOnRadius);
-        Transform bestTarget = null;
+        Transform best = null;
         float closestAngle = lockOnViewAngle;
 
         foreach (var hit in hits)
         {
-            if (hit.transform == target) continue;
-            if (!hit.CompareTag(enemyTag)) continue;
+            if (!hit.CompareTag(enemyTag) || hit.transform == target) continue;
 
             Vector3 toTarget = (hit.transform.position + Vector3.up * 1f) - transform.position;
             float angle = Vector3.Angle(transform.forward, toTarget);
-
             if (angle > lockOnViewAngle) continue;
 
             Vector3 rayOrigin = cameraTransform.position;
@@ -170,12 +186,12 @@ public class PlayerCamera : MonoBehaviour
 
             if (angle < closestAngle)
             {
-                bestTarget = hit.transform;
+                best = hit.transform;
                 closestAngle = angle;
             }
         }
 
-        return bestTarget;
+        return best;
     }
 
     public void ToggleLockOn(Transform newTarget)
@@ -204,16 +220,14 @@ public class PlayerCamera : MonoBehaviour
         if (!isLockedOn || lockTarget == null) return;
 
         Collider[] hits = Physics.OverlapSphere(target.position, lockOnRadius);
-        Transform bestTarget = null;
+        Transform best = null;
         float bestScore = float.MaxValue;
 
-        Vector3 camRight = transform.right;
-        if (!toRight) camRight = -camRight;
+        Vector3 camRight = toRight ? transform.right : -transform.right;
 
         foreach (var hit in hits)
         {
-            if (hit.transform == target || hit.transform == lockTarget) continue;
-            if (!hit.CompareTag(enemyTag)) continue;
+            if (!hit.CompareTag(enemyTag) || hit.transform == lockTarget || hit.transform == target) continue;
 
             Vector3 toCandidate = (hit.transform.position - lockTarget.position).normalized;
             float sideDot = Vector3.Dot(camRight, toCandidate);
@@ -222,19 +236,18 @@ public class PlayerCamera : MonoBehaviour
             if (!IsLockTargetValid(hit.transform)) continue;
 
             Vector3 screenPoint = Camera.main.WorldToViewportPoint(hit.transform.position);
-            float screenOffset = Mathf.Abs(screenPoint.x - 0.5f);
-            float score = screenOffset;
+            float offset = Mathf.Abs(screenPoint.x - 0.5f);
 
-            if (score < bestScore)
+            if (offset < bestScore)
             {
-                bestScore = score;
-                bestTarget = hit.transform;
+                bestScore = offset;
+                best = hit.transform;
             }
         }
 
-        if (bestTarget != null)
+        if (best != null)
         {
-            lockTarget = bestTarget;
+            lockTarget = best;
         }
     }
 
@@ -242,33 +255,26 @@ public class PlayerCamera : MonoBehaviour
     {
         if (!t) return false;
 
+        if (Vector3.Distance(target.position, t.position) > lockOnRadius)
+            return false;
+
         Vector3 from = cameraTransform.position;
         Vector3 to = t.position + Vector3.up * 1.2f;
 
-        if (Physics.Linecast(from, to, out RaycastHit hit, collisionLayers))
-        {
-            if (hit.transform != t) return false;
-        }
+        if (Physics.Linecast(from, to, out RaycastHit hit, collisionLayers) && hit.transform != t)
+            return false;
 
         Vector3 screenPoint = Camera.main.WorldToViewportPoint(to);
         return screenPoint.z > 0f && screenPoint.x > 0f && screenPoint.x < 1f && screenPoint.y > 0f && screenPoint.y < 1f;
     }
 
-    private bool ValidateLockTarget()
-    {
-        if (!lockTarget) return false;
-
-        if (Vector3.Distance(target.position, lockTarget.position) > lockOnRadius)
-            return false;
-
-        return IsLockTargetValid(lockTarget);
-    }
-
     private void ResetCamera()
     {
         if (!target) return;
+
         yaw = target.eulerAngles.y;
         pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
+
         transform.rotation = Quaternion.Euler(0f, yaw, 0f);
         pivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
     }
